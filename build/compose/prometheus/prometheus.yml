@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "odds-service"
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+
+  - job_name: "wallet-service"
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+
+  - job_name: "bet-service"
+    static_configs:
+      - targets: ["host.docker.internal:8082"]
+
+  - job_name: "workers"
+    static_configs:
+      - targets: ["host.docker.internal:8085","host.docker.internal:8086"]
