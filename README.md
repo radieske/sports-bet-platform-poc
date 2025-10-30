@@ -82,7 +82,7 @@ Portas padrão:
 
 ## Arquitetura Visual
 
-![Arquitetura da Plataforma](docs/architecture-diagram.png)
+![Arquitetura da Plataforma](docs/img/architecture-diagram.png)
 
 ---
 
