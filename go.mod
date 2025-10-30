@@ -10,8 +10,10 @@ require (
 )
 
 require (
+	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.15 // indirect
+	golang.org/x/net v0.43.0 // indirect
 )
 
 require (

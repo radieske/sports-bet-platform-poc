@@ -17,10 +17,10 @@ import (
 )
 
 func main() {
-	// carrega config
+	// Carrega as configurações do serviço
 	cfg := config.Load()
 
-	// inicia logger
+	// Inicializa o logger estruturado
 	log, err := logger.New(cfg.ServiceName, cfg.Env)
 	if err != nil {
 		panic(fmt.Errorf("logger init: %w", err))
@@ -29,7 +29,7 @@ func main() {
 
 	log.Info("starting service", zap.String("service", cfg.ServiceName), zap.String("env", cfg.Env))
 
-	// conecta com db Postgres
+	// Estabelece conexão com o banco de dados Postgres
 	pg, err := db.ConnectPostgres(cfg.PostgresDSN)
 	if err != nil {
 		log.Fatal("failed to connect postgres", zap.Error(err))
@@ -37,7 +37,7 @@ func main() {
 	defer pg.Close()
 	log.Info("postgres connected")
 
-	// conecta com cache Redis
+	// Estabelece conexão com o cache Redis
 	redisClient, err := cache.ConnectRedis(cfg.RedisAddr)
 	if err != nil {
 		log.Fatal("failed to connect redis", zap.Error(err))
@@ -45,35 +45,35 @@ func main() {
 	defer redisClient.Close()
 	log.Info("redis connected")
 
-	// cria writer Kafka só pra validar conexão de início
+	// Inicializa writer Kafka para o tópico de odds (validação de conectividade)
 	writer := kafka.NewWriter(cfg.KafkaBrokers, "odds_updates")
 	defer writer.Close()
 	log.Info("kafka writer ready", zap.String("topic", "odds_updates"))
 
-	// sobe servidor de métricas e health
+	// Inicializa servidor HTTP para métricas e health check
 	mux := http.NewServeMux()
 
-	// métricas
+	// Exposição de métricas Prometheus
 	mux.Handle("/metrics", promhttp.Handler())
 
-	// healthz: valida dependências críticas
+	// Endpoint de health check: valida a saúde das dependências críticas (Postgres, Redis, Kafka)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
-		// ping postgres
+		// Valida conexão com Postgres
 		if err := pg.PingContext(ctx); err != nil {
 			http.Error(w, "postgres not healthy: "+err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 
-		// ping redis
+		// Valida conexão com Redis
 		if err := redisClient.Ping(ctx).Err(); err != nil {
 			http.Error(w, "redis not healthy: "+err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 
-		// Kafka check (melhorado)
+		// Valida conexão com Kafka enviando mensagem de teste
 		kctx, kcancel := context.WithTimeout(ctx, 2*time.Second)
 		defer kcancel()
 
@@ -105,6 +105,7 @@ func main() {
 	}
 }
 
+// kafkaWriteTest envia uma mensagem de teste para o Kafka para validar a saúde da conexão
 func kafkaWriteTest(ctx context.Context, w *kafka.Writer) error {
 	payload := []byte(`{"ping":"ok"}`)
 	return kafka.WriteJSON(ctx, w, "healthcheck", payload)

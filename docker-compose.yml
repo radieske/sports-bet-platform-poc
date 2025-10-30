@@ -9,14 +9,28 @@ services:
       POSTGRES_PASSWORD: betpassword
       POSTGRES_DB: bet_core
     ports:
-      - "5433:5432" # 5433 para evitar conflito com PostgreSQL local
+      - "5433:5432"          # expõe 5432 do container na 5433 local
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bet"]
+      test: ["CMD-SHELL", "pg_isready -U bet -d bet_core"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  migrate:
+    image: migrate/migrate
+    container_name: sbpp-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: [
+      "sh", "-c",
+      "migrate -path /migrations -database postgres://bet:betpassword@postgres:5432/bet_core?sslmode=disable up"
+    ]
+    volumes:
+      - ./internal/infra/db/sql/pg/migrations:/migrations
+    restart: on-failure
 
   redis:
     image: redis:7-alpine
@@ -56,7 +70,7 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # listeners: internal no cluster + external local
+      # listeners: interno no cluster + externo local
       KAFKA_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
@@ -72,7 +86,7 @@ services:
     image: prom/prometheus:v2.55.0
     container_name: sbpp-prometheus
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./build/compose/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
     depends_on:
