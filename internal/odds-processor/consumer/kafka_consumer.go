@@ -21,10 +21,11 @@ type Processor struct {
 	Repo   *repository.PostgresRepo
 	Cache  *cache.RedisCache
 
-	OnConsumed func()       // métricas (counter++)
-	OnCached   func()       // métricas
-	OnPersist  func()       // métricas
-	OnError    func(string) // métricas por fase
+	OnConsumed     func()       // métricas (counter++)
+	OnCached       func()       // métricas
+	OnPersist      func()       // métricas
+	OnError        func(string) // métricas por fase
+	OnAfterPersist func(events.OddsUpdate)
 }
 
 // Run inicia o loop principal de consumo e processamento das mensagens Kafka
@@ -75,6 +76,7 @@ func (p *Processor) Run(ctx context.Context) error {
 			}
 			continue
 		}
+
 		if err := p.Repo.InsertHistory(ctx, ev); err != nil {
 			p.Log.Warn("db insert history failed", zap.Error(err))
 			if p.OnError != nil {
@@ -82,8 +84,14 @@ func (p *Processor) Run(ctx context.Context) error {
 			}
 			continue
 		}
+
 		if p.OnPersist != nil {
 			p.OnPersist() // callback de métrica: persistência concluída
+		}
+
+		// Notifica pós-persistência (broadcast p/ Redis/WS)
+		if p.OnAfterPersist != nil {
+			p.OnAfterPersist(ev)
 		}
 	}
 }

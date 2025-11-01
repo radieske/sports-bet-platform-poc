@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os/signal"
 	"strings"
@@ -13,8 +14,11 @@ import (
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
+	"github.com/radieske/sports-bet-platform-poc/pkg/contracts/events"
+
 	"github.com/radieske/sports-bet-platform-poc/internal/odds-processor/cache"
 	"github.com/radieske/sports-bet-platform-poc/internal/odds-processor/consumer"
+	"github.com/radieske/sports-bet-platform-poc/internal/odds-processor/pubsub"
 	"github.com/radieske/sports-bet-platform-poc/internal/odds-processor/repository"
 	sharedcache "github.com/radieske/sports-bet-platform-poc/internal/shared/cache"
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/config"
@@ -22,8 +26,6 @@ import (
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/logger"
 )
 
-// odds-processor-worker: worker responsável por consumir odds do Kafka,
-// atualizar cache Redis, persistir no Postgres e expor métricas/health
 func main() {
 	cfg := config.Load()
 	log, err := logger.New("odds-processor-worker", cfg.Env)
@@ -66,10 +68,12 @@ func main() {
 	cached := prometheus.NewCounter(prometheus.CounterOpts{Name: "odds_proc_cache_sets_total", Help: "sets no cache"})
 	persist := prometheus.NewCounter(prometheus.CounterOpts{Name: "odds_proc_db_writes_total", Help: "escritas no banco (upsert+history)"})
 	errorsBy := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "odds_proc_errors_total", Help: "erros por estágio"}, []string{"stage"})
-
 	prometheus.MustRegister(consumed, cached, persist, errorsBy)
 
-	// Instancia o processor, conectando callbacks de métricas
+	// Broadcaster para publicar atualizações de odds no Redis Pub/Sub (usado pelo odds-service/ws)
+	broadcaster := pubsub.NewRedisBroadcaster(redisClient)
+
+	// Instancia o processor, conectando callbacks de métricas e broadcast
 	proc := &consumer.Processor{
 		Log:        log,
 		Reader:     reader,
@@ -79,6 +83,19 @@ func main() {
 		OnCached:   func() { cached.Inc() },
 		OnPersist:  func() { persist.Inc() },
 		OnError:    func(stage string) { errorsBy.WithLabelValues(stage).Inc() },
+
+		// Após sucesso de persistência, envia update para o WebSocket via Redis Pub/Sub
+		OnAfterPersist: func(ev events.OddsUpdate) {
+			msg := pubsub.WSUpdate{EventID: ev.EventID, Payload: ev}
+			b, _ := json.Marshal(msg)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+
+			if err := broadcaster.Publish(ctx, pubsub.ChannelOddsBroadcast, b); err != nil {
+				log.Warn("ws broadcast publish failed", zap.Error(err))
+			}
+		},
 	}
 
 	// Servidor HTTP para métricas e health check
@@ -104,7 +121,7 @@ func main() {
 		_ = http.ListenAndServe(addr, mux)
 	}()
 
-	// Sinalização para shutdown elegante (SIGINT/SIGTERM)
+	// Sinalização para shutdown gracioso (SIGINT/SIGTERM)
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -113,4 +130,12 @@ func main() {
 		log.Fatal("processor stopped with error", zap.Error(err))
 	}
 	log.Info("odds-processor stopped")
+}
+
+// Helper para contexto background com timeout curto ao publicar no Redis
+func rCtx() context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// cancel será chamado pelo Redis client internamente ao finalizar publish; aqui manter simples
+	_ = cancel
+	return ctx
 }
