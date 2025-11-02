@@ -51,6 +51,6 @@ wscat -c ws://localhost:8080/ws/odds
 2. `make topic` (se necessário)
 3. `make processor`
 4. `make odds`
-5. `make seed` (simulador do fornecedor)
+5. `make supplier` (simulador do fornecedor)
 6. `make ingest` (publica no Kafka)
 7. Conecte no WS e **subscribe** em `MATCH_001` → mensagens devem aparecer.

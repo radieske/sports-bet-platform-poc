@@ -5,11 +5,12 @@ ifneq ("$(wildcard $(ENV_FILE))","")
 	export
 endif
 
-.PHONY: up down ps logs seed odds ingest processor health topic dash fmt vet
+.PHONY: up down ps logs supplier odds ingest processor health topic dash fmt vet
 
 ## Infra
 up:
 	@docker compose up -d
+	make topic
 down:
 	@docker compose down -v
 ps:
@@ -19,12 +20,20 @@ logs:
 
 ## Kafka util (cria tópico se faltar)
 topic:
-	@docker exec -it sbpp-kafka kafka-topics --bootstrap-server localhost:9092 \
+	@echo "🔹 Criando tópico $(KAFKA_TOPIC_ODDS)..."
+	@docker exec -it sbpp-kafka kafka-topics --bootstrap-server $(KAFKA_BROKER) \
 	 --create --topic $(KAFKA_TOPIC_ODDS) --partitions 1 --replication-factor 1 || true
+	@echo "🔹 Criando tópico $(KAFKA_TOPIC_BET_PLACED)..."
+	@docker exec -it sbpp-kafka kafka-topics --bootstrap-server $(KAFKA_BROKER) \
+	 --create --topic $(KAFKA_TOPIC_BET_PLACED) --partitions 1 --replication-factor 1 || true
+	@echo "🔹 Criando tópico $(KAFKA_TOPIC_BET_CONFIRMED)..."
+	@docker exec -it sbpp-kafka kafka-topics --bootstrap-server $(KAFKA_BROKER) \
+	 --create --topic $(KAFKA_TOPIC_BET_CONFIRMED) --partitions 1 --replication-factor 1 || true
+	@echo "✅ Tópicos verificados/criados!"
 
 ## Apps (rodar local)
 odds:
-	@ENV=$(ENV) SERVICE_NAME=$(SERVICE_NAME) HTTP_PORT=$(HTTP_PORT) METRICS_PORT=$(METRICS_PORT) \
+	@ENV=$(ENV) SERVICE_NAME=$(SERVICE_NAME_ODDS) HTTP_PORT=$(HTTP_PORT) METRICS_PORT=$(METRICS_PORT) \
 	 POSTGRES_DSN=$(POSTGRES_DSN) REDIS_ADDR=$(REDIS_ADDR) KAFKA_BROKERS=$(KAFKA_BROKERS) \
 	 go run ./cmd/odds-service
 
@@ -37,19 +46,39 @@ processor:
 	@ENV=$(ENV) POSTGRES_DSN=$(POSTGRES_DSN) REDIS_ADDR=$(REDIS_ADDR) KAFKA_BROKERS=$(KAFKA_BROKERS) \
 	 go run ./cmd/odds-processor-worker
 
-seed:
+supplier:
 	@ENV=$(ENV) go run ./cmd/supplier-simulator
+
+wallet:
+	@ENV=$(ENV) SERVICE_NAME=$(SERVICE_NAME_WALLET) HTTP_PORT=$(HTTP_PORT_WALLET) \
+	METRICS_PORT=$(METRICS_PORT_WALLET) POSTGRES_DSN="$(POSTGRES_DSN)" \
+	go run ./cmd/wallet-service
+
+bet:
+	@ENV=$(ENV) SERVICE_NAME=$(SERVICE_NAME_BET) HTTP_PORT=$(HTTP_PORT_BET) \
+	METRICS_PORT=$(METRICS_PORT_BET) POSTGRES_DSN="$(POSTGRES_DSN)" \
+	REDIS_ADDR="$(REDIS_ADDR)" KAFKA_BROKERS="$(KAFKA_BROKERS)" \
+	go run ./cmd/bet-service
 
 ## Health quick-checks
 health:
-	@echo "odds-service:"
-	@curl -sS http://localhost:$(METRICS_PORT)/healthz || true
-	@echo ""
-	@echo "processor:"
-	@curl -sS http://localhost:9097/healthz || true
-	@echo ""
-	@echo "ingest:"
-	@curl -sS http://localhost:9096/healthz || true
+	@echo "== odds-ingest-service (9096) =="
+	@curl -fsS http://localhost:9096/healthz || echo "ingest: DOWN"
+	@echo
+	@echo "== odds-processor-worker (9097) =="
+	@curl -fsS http://localhost:9097/healthz || echo "processor: DOWN"
+	@echo
+	@echo "== odds-service (9095) =="
+	@curl -fsS http://localhost:9095/healthz || echo "odds-service: DOWN"
+	@echo
+	@echo "== wallet-service (9098) =="
+	@curl -fsS http://localhost:9098/healthz || echo "wallet-service: DOWN"
+	@echo
+	@echo "== bet-service (9099) =="
+	@curl -fsS http://localhost:9099/healthz || echo "bet-service: DOWN"
+	@echo
+	@echo "== kafka topics =="
+	@docker exec -it sbpp-kafka kafka-topics --bootstrap-server localhost:9092 --list || echo "kafka-cli: ERROR"
 
 ## DX
 fmt:
@@ -78,7 +107,7 @@ endif
 POSTGRES_DSN ?= postgres://bet:betpassword@localhost:5433/bet_core?sslmode=disable
 REDIS_ADDR ?= localhost:6379
 KAFKA_BROKERS ?= localhost:9092
-SERVICE_NAME ?= odds-service
+SERVICE_NAME_ODDS ?= odds-service
 HTTP_PORT ?= 8080
 METRICS_PORT ?= 9095
 SUPPLIER_WS_URL ?= ws://localhost:8081/ws

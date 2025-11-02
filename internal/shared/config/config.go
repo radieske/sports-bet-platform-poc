@@ -19,7 +19,7 @@ type Config struct {
 
 func Load() Config {
 	cfg := Config{
-		ServiceName: getEnv("SERVICE_NAME", "odds-service"),
+		ServiceName: getEnv("SERVICE_NAME_ODDS", "odds-service"),
 
 		HTTPPort:    getEnv("HTTP_PORT", "8080"),
 		MetricsPort: getEnv("METRICS_PORT", "9095"),

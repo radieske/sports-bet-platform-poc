@@ -4,16 +4,16 @@ global:
 scrape_configs:
   - job_name: "odds-service"
     static_configs:
-      - targets: ["host.docker.internal:8080"]
+      - targets: ["host.docker.internal:9095"]
 
-  - job_name: "wallet-service"
+  - job_name: "odds-ingest-service"
     static_configs:
-      - targets: ["host.docker.internal:8081"]
+      - targets: ["host.docker.internal:9096"]
 
-  - job_name: "bet-service"
+  - job_name: "odds-processor-worker"
     static_configs:
-      - targets: ["host.docker.internal:8082"]
+      - targets: ["host.docker.internal:9097"]
 
-  - job_name: "workers"
+  - job_name: "prometheus"
     static_configs:
-      - targets: ["host.docker.internal:8085","host.docker.internal:8086"]
+      - targets: ["sbpp-prometheus:9090"]
