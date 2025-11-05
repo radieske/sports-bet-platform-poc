@@ -16,6 +16,8 @@ import (
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/config"
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/logger"
 	"github.com/radieske/sports-bet-platform-poc/pkg/contracts/events"
+
+	sdto "github.com/radieske/sports-bet-platform-poc/internal/supplier-simulator/dto"
 )
 
 var (
@@ -104,10 +106,54 @@ func (h *hub) broadcast(v any) {
 	}
 }
 
-// Processo principal do simulador de fornecedor de odds
+// Server estrutura principal do serviço
+type server struct {
+	log *zap.Logger
+}
+
+func newServer(log *zap.Logger) *server { return &server{log: log} }
+
+// Handler para confirmar aposta (mock)
+func (s *server) confirmHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var req sdto.ConfirmReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	ok := rand.Intn(100) < 80 // 80% sucesso
+
+	resp := sdto.ConfirmResp{
+		Status:      sdto.StatusConfirmed,
+		ProviderRef: "SUP-" + safePrefix(req.BetID, 8),
+	}
+	if !ok {
+		resp.Status = sdto.StatusRejected
+		resp.Reason = "supplier_reject_mock"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// evita panic se o BetID for menor que 8 caracteres
+func safePrefix(s string, n int) string {
+	if len(s) < n {
+		return s
+	}
+	return s[:n]
+}
+
+// gera número aleatório entre min e max
+func rnd(min, max float64) float64 {
+	return (rand.Float64() * (max - min)) + min
+}
+
 func main() {
 	cfg := config.Load()
-	log, err := logger.New("supplier-simulator", cfg.Env)
+	log, err := logger.New(cfg.ServiceName, cfg.Env)
 	if err != nil {
 		panic(err)
 	}
@@ -117,6 +163,7 @@ func main() {
 	prometheus.MustRegister(wsConnections, wsMessagesSent)
 
 	h := newHub(log)
+	s := newServer(log)
 
 	// Gera e envia odds simuladas para todos os clientes conectados a cada 3 segundos
 	go func() {
@@ -133,22 +180,21 @@ func main() {
 					Away: rnd(2.00, 5.00),
 				}
 				u.UpdatedAt = time.Now().UTC()
-				u.Source = "supplier-simulator"
+				u.Source = cfg.ServiceName
 				u.Version = version
 				updates[i] = u
 			}
 			version++
-			// Envia um JSON por partida simulada
 			for _, up := range updates {
 				h.broadcast(up)
 			}
 		}
 	}()
 
-	mux := http.NewServeMux()
+	// ==== MUX PÚBLICO (HTTP principal): /ws e /supplier/confirm
+	appMux := http.NewServeMux()
 
-	// Endpoint WebSocket para clientes receberem odds simuladas
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	appMux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Warn("ws upgrade failed", zap.Error(err))
@@ -164,7 +210,7 @@ func main() {
 				h.remove(id)
 				_ = conn.Close()
 			}()
-			_ = conn.SetReadDeadline(time.Time{}) // Sem deadline para leitura
+			_ = conn.SetReadDeadline(time.Time{})
 			for {
 				// Lê e descarta mensagens do cliente para manter o socket limpo
 				if _, _, err := conn.ReadMessage(); err != nil {
@@ -174,23 +220,35 @@ func main() {
 		}()
 	})
 
-	// Endpoint de health check
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	appMux.HandleFunc("/supplier/confirm", s.confirmHandler)
+
+	// ==== MUX DE MÉTRICAS (/healthz, /metrics)
+	metricsMux := http.NewServeMux()
+	metricsMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	metricsMux.Handle("/metrics", promhttp.Handler())
 
-	// Endpoint de métricas Prometheus
-	mux.Handle("/metrics", promhttp.Handler())
+	// Servidor de métricas em goroutine
+	go func() {
+		metricsAddr := fmt.Sprintf(":%s", cfg.MetricsPort)
+		log.Info("supplier simulator (metrics) running",
+			zap.String("addr", metricsAddr),
+			zap.String("paths", "/healthz,/metrics"),
+		)
+		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
+			log.Fatal("metrics server error", zap.Error(err))
+		}
+	}()
 
-	addr := ":8081"
-	log.Info("supplier simulator (WS) running", zap.String("addr", addr), zap.String("path", "/ws"))
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatal("server error", zap.Error(err))
+	// Servidor público (WS + supplier confirm)
+	publicAddr := fmt.Sprintf(":%s", cfg.HTTPPort)
+	log.Info("supplier simulator (public) running",
+		zap.String("addr", publicAddr),
+		zap.String("paths", "/ws,/supplier/confirm"),
+	)
+	if err := http.ListenAndServe(publicAddr, appMux); err != nil {
+		log.Fatal("public server error", zap.Error(err))
 	}
-}
-
-// Gera um número float64 aleatório entre min e max
-func rnd(min, max float64) float64 {
-	return (rand.Float64() * (max - min)) + min
 }

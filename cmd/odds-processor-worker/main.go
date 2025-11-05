@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os/signal"
 	"strings"
@@ -28,7 +29,7 @@ import (
 
 func main() {
 	cfg := config.Load()
-	log, err := logger.New("odds-processor-worker", cfg.Env)
+	log, err := logger.New(cfg.ServiceName, cfg.Env)
 	if err != nil {
 		panic(err)
 	}
@@ -57,7 +58,7 @@ func main() {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  "odds-processor",
-		Topic:    "odds_updates",
+		Topic:    cfg.TopicOddsUpdates,
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
 	})
@@ -116,7 +117,7 @@ func main() {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
-		addr := ":9097"
+		addr := fmt.Sprintf(":%s", cfg.MetricsPort)
 		log.Info("metrics/health listening", zap.String("addr", addr))
 		_ = http.ListenAndServe(addr, mux)
 	}()
@@ -130,12 +131,4 @@ func main() {
 		log.Fatal("processor stopped with error", zap.Error(err))
 	}
 	log.Info("odds-processor stopped")
-}
-
-// Helper para contexto background com timeout curto ao publicar no Redis
-func rCtx() context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	// cancel será chamado pelo Redis client internamente ao finalizar publish; aqui manter simples
-	_ = cancel
-	return ctx
 }

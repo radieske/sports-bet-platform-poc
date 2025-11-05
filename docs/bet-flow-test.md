@@ -29,13 +29,7 @@ docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
 ## 2) Rodar serviços (via Makefile)
 
-Antes de iniciar os serviços, **popule dados iniciais de teste** (como usuários, eventos ou saldos iniciais):
-```bash
-make supplier
-```
-**Esperado:** log indicando registros criados no banco (`users`, `wallets`, `odds_current` etc.).
-
-Em seguida, abra **vários terminais** e rode os serviços abaixo:
+Abra **vários terminais** e rode os serviços abaixo:
 
 ### A) Odds Service (HTTP:8080 / Métricas:9095)
 ```bash

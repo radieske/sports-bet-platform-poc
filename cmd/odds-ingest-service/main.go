@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,7 +20,7 @@ import (
 
 func main() {
 	cfg := config.Load()
-	log, err := logger.New("odds-ingest-service", cfg.Env)
+	log, err := logger.New(cfg.ServiceName, cfg.Env)
 	if err != nil {
 		panic(err)
 	}
@@ -31,14 +32,14 @@ func main() {
 	// Kafka Publisher
 	pub := publisher.NewKafkaPublisher(
 		[]string{cfg.KafkaBrokers},
-		"odds_updates",
+		cfg.TopicOddsUpdates,
 		log,
 	)
 	defer pub.Close()
 
 	// WS Client
 	wsClient := &service.WSClient{
-		URL:       "ws://localhost:8081/ws", // ajustar pra nome do container em Docker
+		URL:       cfg.SupplierWSURL,
 		Log:       log,
 		Publisher: pub,
 	}
@@ -52,8 +53,10 @@ func main() {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
-		log.Info("metrics/health listening", zap.String("addr", ":9096"))
-		_ = http.ListenAndServe(":9096", mux)
+
+		addr := fmt.Sprintf(":%s", cfg.MetricsPort)
+		log.Info("metrics/health listening", zap.String("addr", addr))
+		_ = http.ListenAndServe(addr, mux)
 	}()
 
 	// graceful shutdown

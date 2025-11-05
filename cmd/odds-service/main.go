@@ -57,9 +57,9 @@ func main() {
 	log.Info("redis connected")
 
 	// Writer Kafka utilizado apenas para healthcheck
-	writer := kafka.NewWriter(cfg.KafkaBrokers, "odds_updates")
+	writer := kafka.NewWriter(cfg.KafkaBrokers, cfg.TopicOddsUpdates)
 	defer writer.Close()
-	log.Info("kafka writer ready", zap.String("topic", "odds_updates"))
+	log.Info("kafka writer ready", zap.String("topic", cfg.TopicOddsUpdates))
 
 	// ========= Servidor de métricas e health check =========
 	metricsMux := http.NewServeMux()

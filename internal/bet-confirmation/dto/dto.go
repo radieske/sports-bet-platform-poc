@@ -1,4 +1,4 @@
-package events
+package dto
 
 type BetPlaced struct {
 	BetID       string  `json:"betId"`
@@ -8,6 +8,12 @@ type BetPlaced struct {
 	Selection   string  `json:"selection"`
 	StakeCents  int64   `json:"stakeCents"`
 	OddValue    float64 `json:"oddValue"`
-	ReservedRef string  `json:"reservedRef"` // external_ref usado na reserva da carteira (betID)
+	ReservedRef string  `json:"reservedRef"`
 	TsUnixMs    int64   `json:"tsUnixMs"`
+}
+
+type SupplierConfirmResp struct {
+	Status      string `json:"status"`
+	ProviderRef string `json:"providerRef"`
+	Reason      string `json:"reason,omitempty"`
 }

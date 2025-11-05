@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
-	kafkago "github.com/segmentio/kafka-go" // ✅ alias explícito
+	kafkago "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
 	bhttp "github.com/radieske/sports-bet-platform-poc/internal/bet-service/http"
@@ -16,13 +17,13 @@ import (
 	"github.com/radieske/sports-bet-platform-poc/internal/bet-service/repo"
 	"github.com/radieske/sports-bet-platform-poc/internal/bet-service/wallet"
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/config"
-	"github.com/radieske/sports-bet-platform-poc/internal/shared/db" // ✅ renomeado
+	"github.com/radieske/sports-bet-platform-poc/internal/shared/db"
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/logger"
 )
 
 func main() {
 	cfg := config.Load()
-	log, _ := logger.New("bet-service", cfg.Env)
+	log, _ := logger.New(cfg.ServiceName, cfg.Env)
 	defer log.Sync()
 
 	// Postgres
@@ -41,7 +42,7 @@ func main() {
 	// Kafka writer (topic bet_placed)
 	writer := kafkago.NewWriter(kafkago.WriterConfig{
 		Brokers:  strings.Split(cfg.KafkaBrokers, ","),
-		Topic:    "bet_placed",
+		Topic:    cfg.TopicBetPlaced,
 		Balancer: &kafkago.LeastBytes{},
 	})
 	defer writer.Close()
@@ -49,13 +50,14 @@ func main() {
 	// deps
 	repository := repo.NewPostgres(pg)
 	ov := odds.NewValidator(rdb)
+
 	wcli := wallet.New("http://localhost:8082") // wallet-service
-	publ := kpub.NewKafkaPublisher(writer, "bet_placed")
+	publ := kpub.NewKafkaPublisher(writer, cfg.TopicBetPlaced)
 
 	// HTTP público
 	api := bhttp.NewServer(log, repository, ov, wcli, publ)
 	apiSrv := &http.Server{
-		Addr:    ":" + cfg.HTTPPort,
+		Addr:    fmt.Sprintf(":%s", cfg.HTTPPort),
 		Handler: api.Router(),
 	}
 
@@ -75,12 +77,12 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 	go func() {
-		addr := ":" + cfg.MetricsPort
+		addr := fmt.Sprintf(":%s", cfg.MetricsPort)
 		log.Info("metrics/health", zap.String("addr", addr))
 		_ = http.ListenAndServe(addr, metricsMux)
 	}()
 
-	log.Info("bet-service listening", zap.String("addr", ":"+cfg.HTTPPort))
+	log.Info("bet-service listening", zap.String("addr", fmt.Sprintf(":%s", cfg.HTTPPort)))
 	if err := apiSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal("api", zap.Error(err))
 	}

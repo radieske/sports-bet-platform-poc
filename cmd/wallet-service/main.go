@@ -19,12 +19,12 @@ func main() {
 	cfg := config.Load()
 
 	// Inicializa logger estruturado
-	log, err := logger.New("wallet-service", cfg.Env)
+	log, err := logger.New(cfg.ServiceName, cfg.Env)
 	if err != nil {
 		panic(err)
 	}
 	defer log.Sync()
-	log.Info("starting service", zap.String("service", "wallet-service"), zap.String("env", cfg.Env))
+	log.Info("starting service", zap.String("service", cfg.ServiceName), zap.String("env", cfg.Env))
 
 	// Conexão com Postgres para operações de carteira
 	pg, err := db.ConnectPostgres(cfg.PostgresDSN)
