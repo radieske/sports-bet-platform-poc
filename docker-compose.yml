@@ -106,6 +106,9 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
     depends_on:
       - prometheus
+    volumes:
+      - ./build/compose/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./build/compose/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
 volumes:
   postgres_data:
