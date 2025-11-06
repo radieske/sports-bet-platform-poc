@@ -1,0 +1,271 @@
+openapi: 3.0.0
+info:
+  title: Sports Bet Platform - API Gateway
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000
+tags:
+  - name: Odds
+    description: Endpoints de consulta de eventos, mercados e odds
+  - name: Wallet
+    description: Endpoints de operações de carteira
+  - name: Bets
+    description: Endpoints de apostas
+paths:
+  /api/odds/v1/events:
+    get:
+      tags: [Odds]
+      summary: Lista eventos esportivos disponíveis
+      responses:
+        '200':
+          description: Lista de eventos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+  /api/odds/v1/events/{id}/markets:
+    get:
+      tags: [Odds]
+      summary: Lista mercados de um evento
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de mercados
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Market'
+  /api/odds/v1/events/{id}/odds:
+    get:
+      tags: [Odds]
+      summary: Lista odds de um evento
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de odds
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Odds'
+  /api/wallet/wallet:
+    get:
+      tags: [Wallet]
+      summary: Consulta saldo da carteira do usuário
+      parameters:
+        - in: query
+          name: userId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dados da carteira
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+  /api/wallet/wallet/deposit:
+    post:
+      tags: [Wallet]
+      summary: Deposita saldo na carteira
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DepositRequest'
+      responses:
+        '200':
+          description: Depósito realizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+  /api/wallet/wallet/reserve:
+    post:
+      tags: [Wallet]
+      summary: Reserva saldo na carteira
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReserveRequest'
+      responses:
+        '200':
+          description: Reserva criada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservationResponse'
+  /api/wallet/wallet/commit:
+    post:
+      tags: [Wallet]
+      summary: Efetiva uma reserva de saldo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitRequest'
+      responses:
+        '200':
+          description: Reserva efetivada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /api/wallet/wallet/refund:
+    post:
+      tags: [Wallet]
+      summary: Estorna uma reserva de saldo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+      responses:
+        '200':
+          description: Reserva estornada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /api/bets/bets:
+    post:
+      tags: [Bets]
+      summary: Cria uma nova aposta
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaceBetRequest'
+      responses:
+        '200':
+          description: Aposta criada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaceBetResponse'
+  /api/bets/bets/{id}:
+    get:
+      tags: [Bets]
+      summary: Consulta status da aposta
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Status da aposta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BetStatusResponse'
+components:
+  schemas:
+    Event:
+      type: object
+      properties:
+        eventId: { type: string }
+        homeTeam: { type: string }
+        awayTeam: { type: string }
+    Market:
+      type: object
+      properties:
+        market: { type: string }
+    Odds:
+      type: object
+      properties:
+        eventId: { type: string }
+        market: { type: string }
+        homeOdd: { type: number }
+        drawOdd: { type: number }
+        awayOdd: { type: number }
+        version: { type: integer }
+        updatedAt: { type: string }
+    WalletResponse:
+      type: object
+      properties:
+        userId: { type: string }
+        walletId: { type: string }
+        balance_cents: { type: integer }
+    DepositRequest:
+      type: object
+      properties:
+        userId: { type: string }
+        amount_cents: { type: integer }
+        external_ref: { type: string }
+      required: [userId, amount_cents]
+    ReserveRequest:
+      type: object
+      properties:
+        userId: { type: string }
+        amount_cents: { type: integer }
+        external_ref: { type: string }
+      required: [userId, amount_cents, external_ref]
+    CommitRequest:
+      type: object
+      properties:
+        userId: { type: string }
+        external_ref: { type: string }
+      required: [userId, external_ref]
+    RefundRequest:
+      type: object
+      properties:
+        userId: { type: string }
+        external_ref: { type: string }
+      required: [userId, external_ref]
+    ReservationResponse:
+      type: object
+      properties:
+        reservation_id: { type: string }
+        status: { type: string }
+    PlaceBetRequest:
+      type: object
+      properties:
+        userId: { type: string }
+        eventId: { type: string }
+        market: { type: string }
+        selection: { type: string }
+        stake_cents: { type: integer }
+        odd_value: { type: number }
+      required: [userId, eventId, market, selection, stake_cents, odd_value]
+    PlaceBetResponse:
+      type: object
+      properties:
+        betId: { type: string }
+        status: { type: string }
+        new_balance: { type: integer }
+        message: { type: string }
+    BetStatusResponse:
+      type: object
+      properties:
+        betId: { type: string }
+        status: { type: string }
