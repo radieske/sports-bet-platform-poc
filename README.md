@@ -1,121 +1,147 @@
-# Sports Bet Platform POC
+# Sports Bet Platform PoC
 
-![Arquitetura Principal](https://raw.githubusercontent.com/radieske/sports-bet-platform-poc/main/docs/img/architecture-diagram.png)
+![Arquitetura da aplicação](https://raw.githubusercontent.com/radieske/sports-bet-platform-poc/main/docs/img/architecture-diagram.png)
+*Figura 1 - Arquitetura geral dos serviços e comunicação entre componentes.*
 
-> Plataforma de apostas esportivas construída em Go (Golang), utilizando arquitetura orientada a eventos e serviços desacoplados.
+Este projeto demonstra uma arquitetura de microserviços voltada para uma plataforma de apostas esportivas. Ele integra serviços de ingestão, processamento e confirmação de apostas, cache Redis, banco de dados Postgres, mensageria Kafka e monitoramento com Prometheus e Grafana.
 
-## Visão Geral
+## Estrutura de Serviços
 
-Esta aplicação é uma **prova de conceito (POC)** que simula o ecossistema de um site de apostas esportivas — cobrindo ingestão de odds de fornecedores externos, processamento em tempo real, cache distribuído e APIs de domínio independentes.
+- **api-gateway**: expõe todas as APIs REST (odds, wallet e bet) via uma única interface HTTP.
+- **supplier-simulator**: simula um fornecedor externo de odds e confirmações de apostas.
+- **odds-ingest-service**: consome odds do fornecedor e publica no Kafka.
+- **odds-processor-worker**: processa e persiste as odds no Postgres, cacheia no Redis e reenvia atualizações via Pub/Sub.
+- **odds-service**: fornece dados e canal WebSocket para consulta de odds.
+- **wallet-service**: gerencia saldos e estornos.
+- **bet-service**: registra apostas e publica eventos no Kafka.
+- **bet-confirmation-worker**: consome apostas criadas e confirma ou rejeita após resposta do fornecedor.
+- **Postgres**, **Redis**, **Kafka**, **Prometheus** e **Grafana**: infraestrutura de apoio.
 
-O foco é demonstrar boas práticas de **arquitetura distribuída**, **resiliência**, **observabilidade** e **organização por domínio (DDD)**.
+## Requisitos
 
----
+- Docker e Docker Compose instalados.
+- Portas 8080 (API Gateway), 9090+ e 3000 livres para uso local.
 
-## Stack Tecnológica
+## Executando a aplicação
 
-**Backend / Core**
-- Go 1.23+
-- gRPC e REST
-- Kafka (event bus principal)
-- Redis (cache quente)
-- PostgreSQL (banco relacional RO/RW)
-- Docker + Docker Compose
-- Prometheus + Grafana (observabilidade)
-
-**Infraestrutura**
-- Kubernetes-ready design
-- Configuração centralizada (pkg/config)
-- Logs estruturados (Zap)
-- Migrations automáticas (golang-migrate)
-- Health checks e métricas Prometheus
-
----
-
-## Estrutura de Diretórios (resumo)
-
-```
-├── build/compose
-├── cmd/                  # executáveis (serviços)
-│   ├── odds-ingest-service
-│   ├── odds-processor-worker
-│   ├── odds-service
-│   └── supplier-simulator
-├── docs/img/             # imagens de arquitetura
-├── internal/
-│   ├── infra/db/sql/pg/migrations  # V001__, V002__...
-│   ├── odds-ingest
-│   ├── odds-processor
-│   ├── odds-service
-│   └── shared            # cache, db, kafka, logger, metrics, config
-└── pkg/contracts/events  # contratos cross-serviço (ex.: OddsUpdate)
-```
-
----
-
-## Serviços Atuais
-
-| Serviço | Descrição |
-|----------|------------|
-| **supplier-simulator** | Simula o fornecedor externo enviando odds em WebSocket. |
-| **odds-ingest-service** | Consome as odds do fornecedor, normaliza e publica no Kafka (`odds_updates`). |
-| **odds-processor-worker** | Consome as odds do Kafka, atualiza Redis e persiste no Postgres RO. |
-| **odds-service** | Exposição via REST + WebSocket para clientes, leitura de cache e fallback em DB. |
-
----
-
-## Arquitetura e Fluxo de Dados
-
-![Pipeline de Odds em Tempo Real](https://raw.githubusercontent.com/radieske/sports-bet-platform-poc/main/docs/img/real-time-odds-pipeline.png)
-
-Fluxo end‑to‑end: **Supplier → Ingest → Kafka → Processor → Redis/Postgres → Odds Service (WS)**.
-
----
-
-## Execução Local
-
-### 1) Subir infraestrutura base
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-### 2) Rodar os serviços Go (atalhos)
+Verifique se todos os contêineres estão saudáveis:
+
 ```bash
-make odds         # odds-service (REST + WS)
-make processor    # odds-processor-worker (Kafka -> Redis/PG)
-make ingest       # odds-ingest-service (WS supplier -> Kafka)
-make supplier     # mock fornecedor WS
+docker compose ps
 ```
 
-> Caso prefira rodar manualmente, veja as variáveis no `.env.example` e os targets do `Makefile`.
+Para encerrar:
 
-### 3) Testar WebSocket
-- Tutorial: [`docs/ws-test.md`](docs/ws-test.md)
+```bash
+docker compose down
+```
+
+## Testes via Swagger
+
+Toda a API REST está exposta através do **API Gateway**, disponível em:
+
+**Swagger UI:** [http://localhost:8000/swagger/](http://localhost:8000/swagger/#/)
+
+### Exemplos de testes
+
+1. **Criar aposta** (`POST /bets`)
+   - Envie um corpo JSON contendo `userId`, `eventId`, `stake_cents` e `odd_value`.
+   - O evento `bet_placed` será publicado no Kafka e processado pelo `bet-confirmation-worker`.
+
+2. **Consultar odds** (`GET /odds/{eventId}`)
+   - Retorna as odds atuais do evento informando o `eventId` recebido via ingest.
+
+3. **Consultar saldo da carteira** (`GET /wallet/{userId}`)
+   - Exibe saldo atual de um usuário de teste.
+
+## Testes diretos de serviços
+
+### Healthchecks
+
+Cada serviço expõe o endpoint `/healthz`:
+
+```bash
+curl http://localhost:8080/healthz   # api-gateway (proxy geral)
+curl http://localhost:8082/healthz   # wallet-service
+curl http://localhost:8083/healthz   # bet-service
+```
+
+O retorno esperado é `ok` com código HTTP 200.
+
+### Teste de conexão WebSocket
+
+O `odds-service` fornece um canal WebSocket acessível em:
+
+```
+ws://localhost:8080/ws/odds
+```
+
+Você pode testar com o comando `wscat` ou usando uma extensão de navegador:
+
+```bash
+npx wscat -c ws://localhost:8080/ws/odds
+```
+
+Após conectado, envie o payload abaixo para subscrever-se a um evento de teste:
+
+```json
+{ "type": "subscribe", "eventId": "MATCH_002" }
+```
+
+Se as odds estiverem sendo publicadas, você receberá mensagens automáticas com atualizações em tempo real.
+
+### Prometheus e Grafana
+
+- **Prometheus:** [http://localhost:9090](http://localhost:9090)
+- **Grafana:** [http://localhost:3000](http://localhost:3000) (login padrão: `admin` / `admin`)
+
+O Grafana já vem configurado para consumir métricas dos serviços via Prometheus. Você pode criar dashboards customizados para:
+
+- Mensagens consumidas do Kafka (`*_messages_consumed_total`)
+- Escritas no banco (`*_db_writes_total`)
+- Erros (`*_errors_total`)
+- Cache hits/sets (`*_cache_sets_total`)
+
+## Logs
+
+Para acompanhar logs de todos os serviços em tempo real:
+
+```bash
+docker compose logs -f
+```
+
+Ou apenas de um serviço específico:
+
+```bash
+docker compose logs -f sbpp-bet-service
+```
+
+Filtrar apenas erros:
+
+```bash
+docker compose logs -f | grep -i "error"
+```
+
+## Tópicos Kafka relevantes
+
+| Tópico | Produzido por | Consumido por |
+|----------|----------------|----------------|
+| `odds_updates` | odds-ingest-service | odds-processor-worker |
+| `bet_placed` | bet-service | bet-confirmation-worker |
+| `bet_confirmed` | bet-confirmation-worker | wallet-service (para futuras integrações) |
+
+## Encerrando e limpando dados
+
+```bash
+docker compose down -v
+```
+
+Esse comando remove volumes e zera o estado do banco, cache e mensageria.
 
 ---
 
-## Health & Metrics
-
-- **Odds Service**: `http://localhost:9095/healthz` | `http://localhost:9095/metrics`  
-- **Odds Processor**: `http://localhost:9097/healthz` | `http://localhost:9097/metrics`  
-- **Ingest Service**: `http://localhost:9096/healthz` | `http://localhost:9096/metrics`  
-- **Prometheus**: <http://localhost:9090>  
-- **Grafana**: <http://localhost:3000> (admin/admin)
-
----
-
-## Status Atual
-
-- Infraestrutura base (Postgres, Redis, Kafka, Prometheus, Grafana)
-- Migrations `V001__init_schema.sql`, `V002__odds_read_models.sql`
-- Serviços `odds-ingest`, `odds-processor` e `odds-service` integrados e funcionais
-- WebSocket público `/ws/odds` com subscribe/unsubscribe por `eventId`
-
----
-
-## Próximos Passos 
-
-- **Wallet Service** — saldo/ledger com concorrência protegida
-- **Bet Service** — POST /bet, reserva de saldo e idempotência
-- **Bet Confirmation Worker** — confirmação assíncrona no fornecedor
-- Métricas custom e tracing distribuído
+Este repositório tem finalidade educacional e demonstra princípios de arquitetura orientada a eventos, processamento assíncrono e monitoramento de serviços distribuídos.
