@@ -17,7 +17,7 @@ type Hub struct {
 	subs map[string]map[*websocket.Conn]struct{}
 }
 
-// NewHub cria uma instância de Hub com política customizada de origem
+// NewHub cria uma instância de Hub com política customizada de origem (CORS)
 func NewHub(allowOrigin func(r *http.Request) bool) *Hub {
 	return &Hub{
 		upgrader: websocket.Upgrader{CheckOrigin: allowOrigin},
@@ -27,6 +27,7 @@ func NewHub(allowOrigin func(r *http.Request) bool) *Hub {
 
 // HandleWS gerencia o ciclo de vida de uma conexão WebSocket
 // Permite subscribe/unsubscribe em eventos e responde a pings
+// Cada cliente pode se inscrever em múltiplos eventIDs
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {

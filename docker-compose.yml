@@ -70,14 +70,14 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # listeners: interno no cluster + externo local
-      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list"]
       interval: 5s
       timeout: 10s
       retries: 20
@@ -109,6 +109,121 @@ services:
     volumes:
       - ./build/compose/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./build/compose/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  odds-service:
+    build:
+      context: .
+      dockerfile: build/docker/odds-service/Dockerfile
+    container_name: sbpp-odds-service
+    ports:
+      - "8080:8080"    # REST API
+      - "9095:9095"    # métricas/health
+    depends_on:
+      - kafka
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./internal/odds-service/config:/app/config:ro
+
+  wallet-service:
+    build:
+      context: .
+      dockerfile: build/docker/wallet-service/Dockerfile
+    container_name: sbpp-wallet-service
+    ports:
+      - "8082:8082"    # REST API
+      - "9098:9098"    # métricas/health
+    depends_on:
+      - kafka
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./internal/wallet-service/config:/app/config:ro
+
+  bet-service:
+    build:
+      context: .
+      dockerfile: build/docker/bet-service/Dockerfile
+    container_name: sbpp-bet-service
+    ports:
+      - "8083:8083"    # REST API
+      - "9099:9099"    # métricas/health
+    depends_on:
+      - kafka
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./internal/bet-service/config:/app/config:ro
+
+  supplier-simulator:
+    build:
+      context: .
+      dockerfile: build/docker/supplier-simulator/Dockerfile
+    container_name: sbpp-supplier-simulator
+    ports:
+      - "8081:8081"    # REST API
+      - "9094:9094"    # métricas/health
+    depends_on:
+      - kafka
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./internal/supplier-simulator/config:/app/config:ro
+
+  odds-ingest-service:
+    build:
+      context: .
+      dockerfile: build/docker/odds-ingest-service/Dockerfile
+    container_name: sbpp-odds-ingest-service
+    ports:
+      - "9096:9096"    # métricas/health
+    depends_on:
+      - kafka
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./internal/odds-ingest-service/config:/app/config:ro
+
+  odds-processor-worker:
+    build:
+      context: .
+      dockerfile: build/docker/odds-processor-worker/Dockerfile
+    container_name: sbpp-odds-processor-worker
+    ports:
+      - "9097:9097"    # métricas/health
+    depends_on:
+      - kafka
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./internal/odds-processor-worker/config:/app/config:ro
+
+  bet-confirmation-worker:
+    build:
+      context: .
+      dockerfile: build/docker/bet-confirmation-worker/Dockerfile
+    container_name: sbpp-bet-confirmation-worker
+    ports:
+      - "9100:9100"    # métricas/health
+    depends_on:
+      - kafka
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./internal/bet-confirmation-worker/config:/app/config:ro
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: build/docker/api-gateway/Dockerfile
+    container_name: sbpp-api-gateway
+    ports:
+      - "8000:8000"
+    depends_on:
+      - bet-service
+    env_file: .env
+    volumes:
+      - ./docs/swagger-ui:/app/docs/swagger-ui:ro
 
 volumes:
   postgres_data:

@@ -3,7 +3,7 @@ info:
   title: Sports Bet Platform - API Gateway
   version: 1.0.0
 servers:
-  - url: http://localhost:8000
+  - url: /
 tags:
   - name: Odds
     description: Endpoints de consulta de eventos, mercados e odds

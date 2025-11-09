@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -35,57 +34,82 @@ func main() {
 	}
 	defer log.Sync()
 
-	// Inicializa dependências: Postgres e Redis
+	// Conexão com Postgres usando DSN configurado.
 	pg, err := db.ConnectPostgres(cfg.PostgresDSN)
 	if err != nil {
 		log.Fatal("postgres connect", zap.Error(err))
 	}
 	defer pg.Close()
 
+	// Conexão com Redis usando endereço configurado.
 	redisClient, err := sharedcache.ConnectRedis(cfg.RedisAddr)
 	if err != nil {
 		log.Fatal("redis connect", zap.Error(err))
 	}
 	defer redisClient.Close()
 
-	// Instancia cache Redis e repositório Postgres para odds
+	// Instâncias de cache e repositório para o processamento de odds.
 	ttl := 60 * time.Second
 	rcache := cache.NewRedisCache(redisClient, ttl)
 	repo := repository.NewPostgresRepo(pg)
 
-	// Configura o consumer Kafka (consumer group odds-processor)
-	brokers := strings.Split(cfg.KafkaBrokers, ",")
+	// Configuração do dialer do Kafka com timeouts e suporte IPv4/IPv6.
+	kDialer := &kafka.Dialer{
+		Timeout:   10 * time.Second,
+		DualStack: true,
+		// ClientID definido para identificação nas métricas do broker.
+		ClientID: cfg.ServiceName,
+	}
+
+	// Configuração do reader do Kafka usando brokers do ambiente.
+	// StartOffset define o ponto inicial quando não há offset comprometido.
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  brokers,
-		GroupID:  "odds-processor",
-		Topic:    cfg.TopicOddsUpdates,
-		MinBytes: 10e3,
-		MaxBytes: 10e6,
+		Brokers:     splitCSV(cfg.KafkaBrokers),
+		GroupID:     "odds-processor",
+		Topic:       cfg.TopicOddsUpdates,
+		MinBytes:    10e3, // ~10KB
+		MaxBytes:    10e6, // ~10MB
+		MaxWait:     500 * time.Millisecond,
+		StartOffset: kafka.FirstOffset,
+		Dialer:      kDialer,
 	})
 	defer reader.Close()
 
-	// Métricas Prometheus para monitoramento do processamento
-	consumed := prometheus.NewCounter(prometheus.CounterOpts{Name: "odds_proc_messages_consumed_total", Help: "mensagens consumidas"})
-	cached := prometheus.NewCounter(prometheus.CounterOpts{Name: "odds_proc_cache_sets_total", Help: "sets no cache"})
-	persist := prometheus.NewCounter(prometheus.CounterOpts{Name: "odds_proc_db_writes_total", Help: "escritas no banco (upsert+history)"})
-	errorsBy := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "odds_proc_errors_total", Help: "erros por estágio"}, []string{"stage"})
+	// Métricas Prometheus para contagem de consumo, cache, persistência e erros.
+	consumed := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "odds_proc_messages_consumed_total",
+		Help: "mensagens consumidas",
+	})
+	cached := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "odds_proc_cache_sets_total",
+		Help: "sets no cache",
+	})
+	persist := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "odds_proc_db_writes_total",
+		Help: "escritas no banco (upsert+history)",
+	})
+	errorsBy := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "odds_proc_errors_total",
+		Help: "erros por estágio",
+	}, []string{"stage"})
 	prometheus.MustRegister(consumed, cached, persist, errorsBy)
 
-	// Broadcaster para publicar atualizações de odds no Redis Pub/Sub (usado pelo odds-service/ws)
+	// Broadcaster para enviar atualizações via Redis Pub/Sub ao serviço de WebSocket.
 	broadcaster := pubsub.NewRedisBroadcaster(redisClient)
 
-	// Instancia o processor, conectando callbacks de métricas e broadcast
+	// Processador que coordena leitura do Kafka, cache, persistência e broadcast.
 	proc := &consumer.Processor{
-		Log:        log,
-		Reader:     reader,
-		Repo:       repo,
-		Cache:      rcache,
+		Log:    log,
+		Reader: reader,
+		Repo:   repo,
+		Cache:  rcache,
+
 		OnConsumed: func() { consumed.Inc() },
 		OnCached:   func() { cached.Inc() },
 		OnPersist:  func() { persist.Inc() },
 		OnError:    func(stage string) { errorsBy.WithLabelValues(stage).Inc() },
 
-		// Após sucesso de persistência, envia update para o WebSocket via Redis Pub/Sub
+		// Publicação de atualização no canal do WebSocket após persistência bem-sucedida.
 		OnAfterPersist: func(ev events.OddsUpdate) {
 			msg := pubsub.WSUpdate{EventID: ev.EventID, Payload: ev}
 			b, _ := json.Marshal(msg)
@@ -99,13 +123,15 @@ func main() {
 		},
 	}
 
-	// Servidor HTTP para métricas e health check
+	// Servidor HTTP para métricas e health check.
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 			ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
 			defer cancel()
+
+			// Verificação leve de Postgres e Redis.
 			if err := pg.PingContext(ctx); err != nil {
 				http.Error(w, "pg", http.StatusServiceUnavailable)
 				return
@@ -114,15 +140,17 @@ func main() {
 				http.Error(w, "redis", http.StatusServiceUnavailable)
 				return
 			}
+
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
+
 		addr := fmt.Sprintf(":%s", cfg.MetricsPort)
 		log.Info("metrics/health listening", zap.String("addr", addr))
 		_ = http.ListenAndServe(addr, mux)
 	}()
 
-	// Sinalização para shutdown gracioso (SIGINT/SIGTERM)
+	// Contexto para encerramento gracioso por sinais de sistema.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -131,4 +159,25 @@ func main() {
 		log.Fatal("processor stopped with error", zap.Error(err))
 	}
 	log.Info("odds-processor stopped")
+}
+
+// splitCSV separa uma lista de brokers no formato "host1:9092,host2:9092".
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ',' {
+			if start < i {
+				out = append(out, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
 }

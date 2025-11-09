@@ -14,13 +14,30 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
-	bcDto "github.com/radieske/sports-bet-platform-poc/internal/bet-confirmation/dto"
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/config"
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/db"
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/kafka"
 	"github.com/radieske/sports-bet-platform-poc/internal/shared/logger"
 	ev "github.com/radieske/sports-bet-platform-poc/pkg/contracts/events"
 )
+
+type betPlaced struct {
+	BetID      string  `json:"betId"`
+	UserID     string  `json:"userId"`
+	EventID    string  `json:"eventId"`
+	Market     string  `json:"market"`
+	Selection  string  `json:"selection"`
+	StakeCents int64   `json:"stake_cents"`
+	OddValue   float64 `json:"odd_value"`
+	ReservedID string  `json:"reserved_id,omitempty"`
+	CreatedAt  int64   `json:"created_at,omitempty"`
+}
+
+type supplierConfirmResp struct {
+	Status      string `json:"status"`
+	ProviderRef string `json:"providerRef"`
+	Reason      string `json:"reason,omitempty"`
+}
 
 func main() {
 	cfg := config.Load()
@@ -30,24 +47,34 @@ func main() {
 	}
 	defer log.Sync()
 
-	// Conexão com banco de dados Postgres para atualização de status das apostas
 	pg, err := db.ConnectPostgres(cfg.PostgresDSN)
 	if err != nil {
 		log.Fatal("pg connect", zap.Error(err))
 	}
 	defer pg.Close()
 
-	// Kafka consumer: consome eventos bet_placed para processar confirmação de apostas
+	// Dialer do Kafka com timeouts e identificação do cliente.
+	kDialer := &kafkago.Dialer{
+		Timeout:   10 * time.Second,
+		DualStack: true,
+		ClientID:  cfg.ServiceName,
+	}
+
+	// Consumer do Kafka para o tópico bet_placed usando brokers vindos da config.
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:  strings.Split(cfg.KafkaBrokers, ","),
-		GroupID:  "bet-confirmation",
-		Topic:    cfg.TopicBetPlaced,
-		MinBytes: 1e3,
-		MaxBytes: 10e6,
+		Brokers:         strings.Split(cfg.KafkaBrokers, ","),
+		GroupID:         "bet-confirmation",
+		Topic:           cfg.TopicBetPlaced,
+		MinBytes:        1e3,
+		MaxBytes:        10e6,
+		MaxWait:         500 * time.Millisecond,
+		StartOffset:     kafkago.FirstOffset,
+		ReadLagInterval: 2 * time.Second,
+		Dialer:          kDialer,
 	})
 	defer reader.Close()
 
-	// Kafka producer: publica eventos bet_confirmed e, opcionalmente, envia para DLQ
+	// Producer para bet_confirmed e, opcionalmente, DLQ para bet_placed.
 	confirmedWriter := kafka.NewWriter(cfg.KafkaBrokers, cfg.TopicBetConfirmed)
 	defer confirmedWriter.Close()
 
@@ -57,7 +84,7 @@ func main() {
 		defer dlqWriter.Close()
 	}
 
-	// Servidor HTTP para métricas Prometheus e healthcheck
+	// Servidor HTTP para métricas e health.
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
@@ -83,7 +110,6 @@ func main() {
 
 	ctx := context.Background()
 
-	// Loop principal: consome eventos do Kafka, processa confirmação e publica resultado
 	for {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
@@ -91,7 +117,8 @@ func main() {
 			time.Sleep(time.Second)
 			continue
 		}
-		var placed bcDto.BetPlaced
+
+		var placed betPlaced
 		if jerr := json.Unmarshal(msg.Value, &placed); jerr != nil {
 			log.Error("unmarshal bet_placed", zap.Error(jerr))
 			continue
@@ -99,17 +126,11 @@ func main() {
 
 		if err := processOne(ctx, log, pg, cfg, confirmedWriter, dlqWriter, &placed); err != nil {
 			log.Error("process bet", zap.String("betId", placed.BetID), zap.Error(err))
-			// Backoff simples para evitar flood em caso de erro
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
 }
 
-// processOne executa o fluxo de confirmação de uma aposta:
-// 1. Chama o supplier para confirmar/rejeitar
-// 2. Atualiza o status da aposta no banco
-// 3. Se rejeitada, tenta estornar o saldo do usuário
-// 4. Publica evento bet_confirmed no Kafka
 func processOne(
 	ctx context.Context,
 	log *zap.Logger,
@@ -117,12 +138,11 @@ func processOne(
 	cfg config.Config,
 	confirmedWriter *kafkago.Writer,
 	dlqWriter *kafkago.Writer,
-	placed *bcDto.BetPlaced,
+	placed *betPlaced,
 ) error {
-	// Chama o supplier para confirmação da aposta
+	// Chamada ao supplier com retries simples.
 	sresp, err := callSupplierConfirm(ctx, cfg, placed)
 	if err != nil {
-		// Retry simples: tenta até 3 vezes antes de enviar para DLQ
 		const retries = 3
 		for i := 0; i < retries; i++ {
 			time.Sleep(time.Duration(300*(i+1)) * time.Millisecond)
@@ -138,8 +158,8 @@ func processOne(
 		}
 	}
 
-	// Atualiza status da aposta no banco
-	newStatus := strings.ToUpper(sresp.Status) // CONFIRMED | REJECTED
+	// Atualização do status da aposta.
+	newStatus := strings.ToUpper(sresp.Status)
 	if newStatus != "CONFIRMED" && newStatus != "REJECTED" {
 		newStatus = "REJECTED"
 	}
@@ -150,15 +170,14 @@ func processOne(
 		log.Warn("bet_tx insert", zap.Error(err))
 	}
 
-	// Se rejeitada, tenta estornar saldo
+	// Estorno de saldo em caso de rejeição.
 	if newStatus == "REJECTED" {
 		if err := walletRefund(ctx, cfg, placed.UserID, placed.StakeCents, "bet-reject:"+placed.BetID); err != nil {
 			log.Error("wallet refund", zap.Error(err))
-			// No mundo real, seria interessante uma fila de compensação
 		}
 	}
 
-	// Publica evento de confirmação no Kafka
+	// Publicação do evento bet_confirmed.
 	evc := ev.BetConfirmed{
 		BetID:       placed.BetID,
 		UserID:      placed.UserID,
@@ -170,8 +189,7 @@ func processOne(
 	return kafka.WriteJSON(ctx, confirmedWriter, placed.BetID, mustJSON(evc))
 }
 
-// callSupplierConfirm faz requisição HTTP ao supplier para confirmar/rejeitar a aposta
-func callSupplierConfirm(ctx context.Context, cfg config.Config, p *bcDto.BetPlaced) (*bcDto.SupplierConfirmResp, error) {
+func callSupplierConfirm(ctx context.Context, cfg config.Config, p *betPlaced) (*supplierConfirmResp, error) {
 	body, _ := json.Marshal(map[string]any{
 		"betId":       p.BetID,
 		"userId":      p.UserID,
@@ -179,15 +197,19 @@ func callSupplierConfirm(ctx context.Context, cfg config.Config, p *bcDto.BetPla
 		"stake_cents": p.StakeCents,
 		"odd_value":   p.OddValue,
 	})
-	// Deriva a URL HTTP base do supplier a partir da URL WS
+
+	// Derivação da base HTTP a partir da URL de WS do supplier.
 	base := cfg.SupplierWSURL
 	base = strings.Replace(base, "ws://", "http://", 1)
 	base = strings.TrimSuffix(base, "/ws")
 	url := base + "/supplier/confirm"
 
+	// Cliente HTTP com timeout.
+	httpClient := &http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +217,8 @@ func callSupplierConfirm(ctx context.Context, cfg config.Config, p *bcDto.BetPla
 	if resp.StatusCode >= 300 {
 		return nil, errors.New("supplier http " + resp.Status)
 	}
-	var out bcDto.SupplierConfirmResp
+
+	var out supplierConfirmResp
 	if jerr := json.NewDecoder(resp.Body).Decode(&out); jerr != nil {
 		return nil, jerr
 	}
@@ -221,10 +244,18 @@ func walletRefund(ctx context.Context, cfg config.Config, userID string, amount 
 		"external_ref": ext,
 	})
 
-	url := "http://localhost:8082/wallet/refund"
+	// URL do wallet parametrizável por config; padrão para ambiente Docker.
+	walletBase := cfg.WalletBaseURL
+	if walletBase == "" {
+		walletBase = "http://wallet-service:8082"
+	}
+	url := strings.TrimRight(walletBase, "/") + "/wallet/refund"
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

@@ -7,10 +7,13 @@ import (
 	"github.com/radieske/sports-bet-platform-poc/internal/odds-service/dto"
 )
 
+// ReadRepo encapsula operações de leitura no banco de dados Postgres para odds
+// Utilizado pelos endpoints REST para consultar eventos, mercados e odds
 type ReadRepo struct {
 	DB *sql.DB
 }
 
+// ListEvents retorna todos os eventos esportivos distintos
 func (r *ReadRepo) ListEvents(ctx context.Context) ([]dto.Event, error) {
 	const q = `
 		SELECT event_id, MAX(home_team) AS home_team, MAX(away_team) AS away_team
@@ -34,6 +37,7 @@ func (r *ReadRepo) ListEvents(ctx context.Context) ([]dto.Event, error) {
 	return out, rows.Err()
 }
 
+// ListMarkets retorna todos os mercados distintos de um evento
 func (r *ReadRepo) ListMarkets(ctx context.Context, eventID string) ([]dto.Market, error) {
 	const q = `
 		SELECT DISTINCT market
@@ -57,6 +61,7 @@ func (r *ReadRepo) ListMarkets(ctx context.Context, eventID string) ([]dto.Marke
 	return out, rows.Err()
 }
 
+// GetOddsByEvent retorna todas as odds de um evento
 func (r *ReadRepo) GetOddsByEvent(ctx context.Context, eventID string) ([]dto.Odds, error) {
 	const q = `
 		SELECT event_id, market, home_odd, draw_odd, away_odd, version, to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ')

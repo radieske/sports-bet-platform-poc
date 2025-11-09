@@ -1,5 +1,8 @@
 package main
 
+// odds-service: Serviço responsável por expor odds esportivas via REST e WebSocket.
+// Utiliza Postgres para leitura dos dados, Redis para cache e Pub/Sub, Kafka para healthcheck e Prometheus para métricas.
+
 import (
 	"context"
 	"fmt"
@@ -25,13 +28,13 @@ import (
 )
 
 func main() {
-	// Cria contexto base para shutdown controlado via sinal do SO
+	// Cria contexto base para shutdown controlado via sinal do SO (Ctrl+C ou SIGTERM)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.Load()
+	cfg := config.Load() // Carrega configurações do serviço (portas, DSNs, etc)
 
-	// Inicializa logger estruturado
+	// Inicializa logger estruturado (zap) para logs padronizados
 	log, err := logger.New(cfg.ServiceName, cfg.Env)
 	if err != nil {
 		panic(fmt.Errorf("logger init: %w", err))
@@ -48,7 +51,7 @@ func main() {
 	defer pg.Close()
 	log.Info("postgres connected")
 
-	// Conexão com Redis compartilhado
+	// Conexão com Redis compartilhado (cache e pub/sub)
 	redisClient, err := cache.ConnectRedis(cfg.RedisAddr)
 	if err != nil {
 		log.Fatal("failed to connect redis", zap.Error(err))
@@ -56,19 +59,19 @@ func main() {
 	defer redisClient.Close()
 	log.Info("redis connected")
 
-	// Writer Kafka utilizado apenas para healthcheck
+	// Writer Kafka utilizado apenas para healthcheck (testa conexão com Kafka)
 	writer := kafka.NewWriter(cfg.KafkaBrokers, cfg.TopicOddsUpdates)
 	defer writer.Close()
 	log.Info("kafka writer ready", zap.String("topic", cfg.TopicOddsUpdates))
 
-	// ========= Servidor de métricas e health check =========
+	// Servidor de métricas e health check
 	metricsMux := http.NewServeMux()
-	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsMux.Handle("/metrics", promhttp.Handler()) // expõe métricas Prometheus
 	metricsMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		hctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
-		// Valida dependências críticas
+		// Valida dependências críticas (Postgres, Redis, Kafka)
 		if err := pg.PingContext(hctx); err != nil {
 			http.Error(w, "postgres not healthy: "+err.Error(), http.StatusServiceUnavailable)
 			return
@@ -98,14 +101,14 @@ func main() {
 		Handler: metricsMux,
 	}
 
-	// ========= Servidor principal (REST + WS) =========
+	// Servidor principal (REST + WS)
 	// Repositório de leitura e cache de odds
 	readRepo := &repo.ReadRepo{DB: pg}
 	oddsCache := svcCache.New(redisClient)
 	api := &httpapi.API{ReadRepo: readRepo, Cache: oddsCache}
 
 	// Hub WebSocket e inscrição no Redis Pub/Sub para broadcast de odds
-	hub := ws.NewHub(func(r *http.Request) bool { return true /* TODO: restringir origem */ })
+	hub := ws.NewHub(func(r *http.Request) bool { return true })
 	ws.StartRedisSubscriber(ctx, redisClient, hub)
 
 	appMux := http.NewServeMux()
@@ -117,7 +120,7 @@ func main() {
 		Handler: appMux,
 	}
 
-	// ========= Inicializa servidores =========
+	// Inicializa servidores
 	go func() {
 		log.Info("metrics/health server starting", zap.String("addr", metricsSrv.Addr))
 		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -132,7 +135,7 @@ func main() {
 		}
 	}()
 
-	// ========= Aguarda sinal de shutdown =========
+	// Aguarda sinal de shutdown
 	<-ctx.Done()
 	log.Info("shutdown signal received")
 

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 
 	"go.uber.org/zap"
 
@@ -22,9 +23,21 @@ func main() {
 	defer log.Sync()
 
 	// targets
-	odds := rp("http://localhost:8080")
-	wallet := rp("http://localhost:8082")
-	bet := rp("http://localhost:8083")
+	oddsURL := os.Getenv("ODDS_URL")
+	if oddsURL == "" {
+		oddsURL = "http://localhost:8080"
+	}
+	walletURL := os.Getenv("WALLET_URL")
+	if walletURL == "" {
+		walletURL = "http://localhost:8082"
+	}
+	betURL := os.Getenv("BET_URL")
+	if betURL == "" {
+		betURL = "http://localhost:8083"
+	}
+	odds := rp(oddsURL)
+	wallet := rp(walletURL)
+	bet := rp(betURL)
 
 	mux := http.NewServeMux()
 
@@ -37,20 +50,31 @@ func main() {
 	// bets (ex.: /api/bets/* -> bet-service)
 	mux.Handle("/api/bets/", http.StripPrefix("/api/bets", bet))
 
-	// Serve openapi-gateway.yaml em /swagger/openapi-gateway.yaml
+	// Serve openapi-gateway.yaml em /swagger/openapi-gateway.yaml e /docs/swagger-ui/openapi-gateway.yaml
 	mux.HandleFunc("/swagger/openapi-gateway.yaml", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./docs/swagger-ui/openapi-gateway.yaml")
+		http.ServeFile(w, r, "/app/docs/swagger-ui/openapi-gateway.yaml")
+	})
+	mux.HandleFunc("/docs/swagger-ui/openapi-gateway.yaml", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "/app/docs/swagger-ui/openapi-gateway.yaml")
 	})
 
-	// Serve Swagger UI em /swagger/
+	// Serve Swagger UI em /swagger/ e /docs/swagger-ui/
 	mux.HandleFunc("/swagger/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/swagger/" || r.URL.Path == "/swagger/index.html" {
-			http.ServeFile(w, r, "./docs/swagger-ui/dist/index.html")
+			http.ServeFile(w, r, "/app/docs/swagger-ui/dist/index.html")
 			return
 		}
-		http.StripPrefix("/swagger/", http.FileServer(http.Dir("./docs/swagger-ui/dist"))).ServeHTTP(w, r)
+		http.StripPrefix("/swagger/", http.FileServer(http.Dir("/app/docs/swagger-ui/dist"))).ServeHTTP(w, r)
+	})
+	mux.HandleFunc("/docs/swagger-ui/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/docs/swagger-ui/" || r.URL.Path == "/docs/swagger-ui/index.html" {
+			http.ServeFile(w, r, "/app/docs/swagger-ui/dist/index.html")
+			return
+		}
+		http.StripPrefix("/docs/swagger-ui/", http.FileServer(http.Dir("/app/docs/swagger-ui/dist"))).ServeHTTP(w, r)
 	})
 	mux.Handle("/swagger", http.RedirectHandler("/swagger/", http.StatusMovedPermanently))
+	mux.Handle("/docs/swagger-ui", http.RedirectHandler("/docs/swagger-ui/", http.StatusMovedPermanently))
 
 	addr := ":" + cfg.HTTPPort
 	log.Info("api-gateway listening", zap.String("addr", addr))
@@ -62,7 +86,6 @@ func main() {
 func withCORS(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)

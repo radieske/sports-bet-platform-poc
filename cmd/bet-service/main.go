@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -51,7 +52,11 @@ func main() {
 	repository := repo.NewPostgres(pg)
 	ov := odds.NewValidator(rdb)
 
-	wcli := wallet.New("http://localhost:8082") // wallet-service
+	walletURL := os.Getenv("WALLET_URL")
+	if walletURL == "" {
+		walletURL = "http://localhost:8082"
+	}
+	wcli := wallet.New(walletURL) // wallet-service
 	publ := kpub.NewKafkaPublisher(writer, cfg.TopicBetPlaced)
 
 	// HTTP público

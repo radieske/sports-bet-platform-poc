@@ -13,6 +13,11 @@ const PubSubChannel = "odds_updates_broadcast"
 
 // StartRedisSubscriber inicia uma goroutine que escuta o canal Redis Pub/Sub
 // e repassa as atualizações recebidas para todos os clientes WebSocket conectados via Hub
+//
+// Funcionamento:
+// - Recebe mensagens JSON do canal Redis
+// - Desserializa para OddsUpdate
+// - Chama hub.Broadcast para enviar aos clientes conectados
 func StartRedisSubscriber(ctx context.Context, r *redis.Client, hub *Hub) {
 	sub := r.Subscribe(ctx, PubSubChannel)
 	ch := sub.Channel()

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,12 +27,14 @@ func main() {
 	}
 	defer log.Sync()
 
+	log.Info("Kafka brokers", zap.String("brokers", cfg.KafkaBrokers))
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Kafka Publisher
 	pub := publisher.NewKafkaPublisher(
-		[]string{cfg.KafkaBrokers},
+		strings.Split(cfg.KafkaBrokers, ","),
 		cfg.TopicOddsUpdates,
 		log,
 	)
@@ -51,7 +54,6 @@ func main() {
 		mux.Handle("/metrics", promhttp.Handler())
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
 		})
 
 		addr := fmt.Sprintf(":%s", cfg.MetricsPort)
